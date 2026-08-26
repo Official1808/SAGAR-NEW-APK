@@ -385,21 +385,25 @@ class GateViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Gmail Email Dispatcher & Vercel Webhook Settings ---
+    // --- Gmail & Resend Email Dispatcher & Vercel Webhook Settings ---
     val vercelBackendUrl: String get() = emailService.vercelBackendUrl
 
     fun updateGmailSettings(
         smtpSenderEmail: String,
         appPassword: String,
         recipientEmail: String = smtpSenderEmail,
-        vercelBackendUrl: String = ""
+        vercelBackendUrl: String = "",
+        resendApiKey: String = ""
     ) {
         emailService.smtpSenderEmail = smtpSenderEmail
         emailService.appPassword = appPassword
         emailService.recipientEmail = recipientEmail
-        emailService.vercelBackendUrl = vercelBackendUrl
+        if (vercelBackendUrl.isNotBlank()) {
+            emailService.vercelBackendUrl = vercelBackendUrl
+        }
+        emailService.resendApiKey = resendApiKey
         _authUiState.value = _authUiState.value.copy(
-            successMessage = "Email & Vercel settings saved successfully."
+            successMessage = "Email, Resend API & Vercel Gateway settings saved successfully."
         )
     }
 

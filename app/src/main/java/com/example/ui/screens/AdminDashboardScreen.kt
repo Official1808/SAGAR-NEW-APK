@@ -1721,11 +1721,13 @@ private fun SettingsTab(
 ) {
     val scrollState = rememberScrollState()
 
+    var resendApiKey by remember { mutableStateOf(viewModel.emailService.resendApiKey) }
     var smtpSenderEmail by remember { mutableStateOf(viewModel.emailService.smtpSenderEmail) }
     var appPassword by remember { mutableStateOf(viewModel.emailService.appPassword) }
     var recipientEmail by remember { mutableStateOf(viewModel.emailService.recipientEmail) }
     var vercelBackendUrl by remember { mutableStateOf(viewModel.emailService.vercelBackendUrl) }
     var isAppPasswordVisible by remember { mutableStateOf(false) }
+    var isResendKeyVisible by remember { mutableStateOf(false) }
 
     var currentPass by remember { mutableStateOf("") }
     var newPass by remember { mutableStateOf("") }
@@ -1738,7 +1740,7 @@ private fun SettingsTab(
             .padding(16.dp)
             .verticalScroll(scrollState)
     ) {
-        // GMAIL SMTP CONFIGURATION CARD
+        // EMAIL DISPATCH & VERCEL CONFIGURATION CARD
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1761,7 +1763,7 @@ private fun SettingsTab(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "GMAIL SMTP DISPATCH ENGINE",
+                            text = "EMAIL & VERCEL GATEWAY ENGINE",
                             style = MaterialTheme.typography.titleSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = GateWhite
@@ -1770,13 +1772,13 @@ private fun SettingsTab(
                     }
 
                     val isConfigured = viewModel.emailService.isConfigured()
-                    StatusBadge(status = if (isConfigured) "CONFIGURED" else "PASSWORD NEEDED")
+                    StatusBadge(status = if (isConfigured) "CONFIGURED" else "KEYS OPTIONAL")
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "PW SARA sends instant authorization emails with Approve/Deny buttons to your designated Recipient Email using Google SMTP ($smtpSenderEmail) whenever students sign up or log in from new devices.",
+                    text = "PW SARA sends instant authorization emails with Approve/Deny buttons to your designated Recipient Email whenever students sign up or log in from new devices.",
                     style = MaterialTheme.typography.bodySmall,
                     color = GateTextSecondary
                 )
@@ -1788,9 +1790,43 @@ private fun SettingsTab(
                     value = recipientEmail,
                     onValueChange = { recipientEmail = it },
                     label = "Alert Recipient Email (Where YOU Receive Alerts)",
-                    placeholder = "e.g. your_other_email@domain.com",
+                    placeholder = "mesagarmeena@gmail.com",
                     leadingIcon = Icons.Default.MarkEmailRead,
                     testTag = "recipient_email_input"
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Vercel Backend / Webhook URL Field
+                GateTextField(
+                    value = vercelBackendUrl,
+                    onValueChange = { vercelBackendUrl = it },
+                    label = "Vercel Gateway URL (Instant One-Click Approval)",
+                    placeholder = "https://sagar-new-apk.vercel.app",
+                    leadingIcon = Icons.Default.Link,
+                    testTag = "vercel_backend_url_input"
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Resend API Key Field (Recommended for Resend delivery)
+                GateTextField(
+                    value = resendApiKey,
+                    onValueChange = { resendApiKey = it },
+                    label = "Resend API Key (re_... from resend.com)",
+                    placeholder = "re_123456789abcdef",
+                    leadingIcon = Icons.Default.Key,
+                    trailingIcon = {
+                        IconButton(onClick = { isResendKeyVisible = !isResendKeyVisible }) {
+                            Icon(
+                                imageVector = if (isResendKeyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "Toggle visibility",
+                                tint = GateTextSecondary
+                            )
+                        }
+                    },
+                    visualTransformation = if (isResendKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    testTag = "resend_api_key_input"
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1799,7 +1835,7 @@ private fun SettingsTab(
                 GateTextField(
                     value = smtpSenderEmail,
                     onValueChange = { smtpSenderEmail = it },
-                    label = "SMTP Sender Gmail Address",
+                    label = "Gmail SMTP Sender Email (Optional)",
                     placeholder = "mesagarmeena@gmail.com",
                     leadingIcon = Icons.Default.Email,
                     testTag = "admin_email_input"
@@ -1811,7 +1847,7 @@ private fun SettingsTab(
                 GateTextField(
                     value = appPassword,
                     onValueChange = { appPassword = it },
-                    label = "Google App Password for $smtpSenderEmail (16 Letters)",
+                    label = "Google App Password (16 Letters, Optional)",
                     placeholder = "e.g. abcd efgh ijkl mnop",
                     leadingIcon = Icons.Default.Key,
                     trailingIcon = {
@@ -1827,18 +1863,6 @@ private fun SettingsTab(
                     testTag = "app_password_input"
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Vercel Backend / Webhook URL Field
-                GateTextField(
-                    value = vercelBackendUrl,
-                    onValueChange = { vercelBackendUrl = it },
-                    label = "Vercel Backend URL (Approve / Deny Webhook)",
-                    placeholder = "https://your-app.vercel.app",
-                    leadingIcon = Icons.Default.Link,
-                    testTag = "vercel_backend_url_input"
-                )
-
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Step-by-step guidance
@@ -1851,12 +1875,12 @@ private fun SettingsTab(
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = "How it works:",
+                            text = "How the Multi-Channel Delivery Works:",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = GateWhite)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "• Sender Account: '$smtpSenderEmail' uses the 16-letter App Password to authenticate with Google SMTP.\n• Recipient Inbox: Emails are delivered directly to '$recipientEmail'.\n• Vercel Webhook: Email buttons will link directly to '$vercelBackendUrl' for 1-click web approvals in browser with ?action=approve|deny&token=...&username=...\n• 16-Letter App Password: Generate at myaccount.google.com/apppasswords under the '$smtpSenderEmail' Google Account.",
+                            text = "1. Resend API (Recommended): Add your Resend key (starts with 're_') to deliver directly from Resend into your inbox with HTML Approve / Deny buttons.\n2. Vercel Gateway: Connected to '$vercelBackendUrl' for 1-click web decisions.\n3. Gmail SMTP (Backup): Uses your Google App Password for direct SSL delivery.\n4. HTTP Fallback: Zero-setup webhooks if no API keys are entered.",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
                             color = GateTextSecondary
                         )
@@ -1876,7 +1900,8 @@ private fun SettingsTab(
                                 smtpSenderEmail = smtpSenderEmail,
                                 appPassword = appPassword,
                                 recipientEmail = recipientEmail,
-                                vercelBackendUrl = vercelBackendUrl
+                                vercelBackendUrl = vercelBackendUrl,
+                                resendApiKey = resendApiKey
                             )
                         },
                         modifier = Modifier

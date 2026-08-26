@@ -29,9 +29,16 @@ class EmailService(private val context: Context) {
         const val DEFAULT_SMTP_SENDER = "mesagarmeena@gmail.com"
         const val DEFAULT_RECIPIENT_EMAIL = "mesagarmeena@gmail.com"
         const val DEFAULT_ADMIN_EMAIL = "mesagarmeena@gmail.com"
+        const val DEFAULT_VERCEL_URL = "https://sagar-new-apk.vercel.app"
         const val SMTP_HOST = "smtp.gmail.com"
         const val SMTP_PORT = 465
     }
+
+    var resendApiKey: String
+        get() = prefs.getString("resend_api_key", "")?.trim() ?: ""
+        set(value) {
+            prefs.edit().putString("resend_api_key", value.trim()).apply()
+        }
 
     var smtpSenderEmail: String
         get() = prefs.getString("smtp_sender_email", DEFAULT_SMTP_SENDER)?.trim()?.ifBlank { DEFAULT_SMTP_SENDER } ?: DEFAULT_SMTP_SENDER
@@ -59,12 +66,12 @@ class EmailService(private val context: Context) {
         }
 
     var vercelBackendUrl: String
-        get() = prefs.getString("vercel_backend_url", "https://pwsara-2.vercel.app")?.trim() ?: "https://pwsara-2.vercel.app"
+        get() = prefs.getString("vercel_backend_url", DEFAULT_VERCEL_URL)?.trim()?.ifBlank { DEFAULT_VERCEL_URL } ?: DEFAULT_VERCEL_URL
         set(value) {
             prefs.edit().putString("vercel_backend_url", value.trim()).apply()
         }
 
-    fun isConfigured(): Boolean = appPassword.isNotBlank() && smtpSenderEmail.isNotBlank() && recipientEmail.isNotBlank()
+    fun isConfigured(): Boolean = resendApiKey.isNotBlank() || (appPassword.isNotBlank() && smtpSenderEmail.isNotBlank())
 
     /**
      * Send access request email via direct HTTP mail dispatch and Gmail SMTP (if configured)
@@ -188,11 +195,27 @@ class EmailService(private val context: Context) {
             </html>
         """.trimIndent()
 
+        var resendSuccess = false
         var httpSuccess = false
         var smtpSuccess = false
         var lastError: Exception? = null
 
-        // 1. Direct zero-configuration HTTP Email Dispatchers
+        // 1. Resend API Dispatcher (Instant HTML delivery with high deliverability)
+        if (resendApiKey.isNotBlank()) {
+            try {
+                resendSuccess = sendResendEmail(
+                    apiKey = resendApiKey,
+                    toEmail = targetRecipient,
+                    subject = subject,
+                    htmlContent = htmlBody
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Resend API dispatch error", e)
+                lastError = e
+            }
+        }
+
+        // 2. Direct HTTP Email Dispatchers
         try {
             httpSuccess = sendHttpEmail(
                 toEmail = targetRecipient,
@@ -211,10 +234,10 @@ class EmailService(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e(TAG, "Direct HTTP email dispatch error", e)
-            lastError = e
+            if (lastError == null) lastError = e
         }
 
-        // 2. If Gmail App Password is configured, also send via Gmail SMTP SSL (Port 465)
+        // 3. If Gmail App Password is configured, also send via Gmail SMTP SSL (Port 465)
         if (currentPassword.isNotBlank()) {
             try {
                 sendSmtpEmail(
@@ -231,10 +254,57 @@ class EmailService(private val context: Context) {
             }
         }
 
-        if (httpSuccess || smtpSuccess) {
+        if (resendSuccess || httpSuccess || smtpSuccess) {
             Result.success("Email alert successfully dispatched to $targetRecipient")
         } else {
-            Result.failure(lastError ?: IllegalStateException("Failed to deliver security alert email. Please check your Gmail App Password or network."))
+            Result.failure(lastError ?: IllegalStateException("Failed to deliver security alert email. Please check your Resend API Key or Gmail App Password."))
+        }
+    }
+
+    /**
+     * Send email via Resend API (api.resend.com)
+     */
+    private fun sendResendEmail(
+        apiKey: String,
+        toEmail: String,
+        subject: String,
+        htmlContent: String,
+        fromEmail: String = "PW SARA <onboarding@resend.dev>"
+    ): Boolean {
+        try {
+            val url = URL("https://api.resend.com/emails")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.setRequestProperty("Accept", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val json = org.json.JSONObject().apply {
+                put("from", fromEmail)
+                put("to", org.json.JSONArray().apply { put(toEmail.trim()) })
+                put("subject", subject)
+                put("html", htmlContent)
+            }
+
+            conn.outputStream.use { os ->
+                os.write(json.toString().toByteArray(Charsets.UTF_8))
+                os.flush()
+            }
+
+            val code = conn.responseCode
+            val responseBody = try {
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } catch (e: Exception) {
+                conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            }
+            Log.d(TAG, "Resend API response ($code): $responseBody")
+            return code in 200..299
+        } catch (e: Exception) {
+            Log.e(TAG, "Resend API call exception", e)
+            return false
         }
     }
 
@@ -256,8 +326,8 @@ class EmailService(private val context: Context) {
         approveUrl: String = "",
         denyUrl: String = ""
     ): Boolean {
-        val effectiveApproveUrl = if (approveUrl.isNotBlank()) approveUrl else "https://pwsara-2.vercel.app/api/action?action=approve&token=$approvalToken&username=$username"
-        val effectiveDenyUrl = if (denyUrl.isNotBlank()) denyUrl else "https://pwsara-2.vercel.app/api/action?action=deny&token=$denyToken&username=$username"
+        val effectiveApproveUrl = if (approveUrl.isNotBlank()) approveUrl else "$DEFAULT_VERCEL_URL/api/action?action=approve&token=$approvalToken&username=$username"
+        val effectiveDenyUrl = if (denyUrl.isNotBlank()) denyUrl else "$DEFAULT_VERCEL_URL/api/action?action=deny&token=$denyToken&username=$username"
 
         // Attempt 1: FormSubmit AJAX JSON endpoint
         try {
@@ -362,7 +432,39 @@ class EmailService(private val context: Context) {
 
         val diagnostics = StringBuilder()
 
-        // 1. Try Direct HTTP Webhook
+        // 1. Try Resend API if API Key is configured
+        if (resendApiKey.isNotBlank()) {
+            val resendHtml = """
+                <!DOCTYPE html>
+                <html>
+                <body style="background:#0d0e12; color:#fff; font-family:sans-serif; padding:20px;">
+                  <div style="max-width:500px; margin:0 auto; background:#16181f; padding:24px; border-radius:10px; border:1px solid #3b82f6;">
+                    <h2 style="color:#60a5fa; margin-top:0;">✔ Resend API Connection Verified</h2>
+                    <p style="color:#e5e7eb;">Your Resend API Key is working perfectly and connected with PW SARA!</p>
+                    <p style="color:#9ca3af; font-size:13px;">Timestamp: $formattedDate</p>
+                    <p style="color:#9ca3af; font-size:13px;">Recipient Inbox: $targetRecipient</p>
+                    <p style="color:#9ca3af; font-size:13px;">Vercel Gateway: $vercelBackendUrl</p>
+                  </div>
+                </body>
+                </html>
+            """.trimIndent()
+
+            val resendOk = sendResendEmail(
+                apiKey = resendApiKey,
+                toEmail = targetRecipient,
+                subject = "✔ PW SARA: Resend API Test Success",
+                htmlContent = resendHtml
+            )
+            if (resendOk) {
+                diagnostics.append("✔ Resend API: Email delivered successfully to $targetRecipient!\n")
+            } else {
+                diagnostics.append("✖ Resend API: Failed. Please verify your Resend API Key.\n")
+            }
+        } else {
+            diagnostics.append("ℹ Resend API: Not configured yet. (Add your Resend API Key for direct instant delivery)\n")
+        }
+
+        // 2. Try Direct HTTP Webhook
         val httpOk = sendHttpEmail(
             toEmail = targetRecipient,
             subject = subject,
