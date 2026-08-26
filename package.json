@@ -1,0 +1,10 @@
+{
+  "name": "pwsara-gateway",
+  "version": "1.0.0",
+  "description": "PW SARA Gate Security System - Android App & Vercel Webhook Authorization Server",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {}
+}

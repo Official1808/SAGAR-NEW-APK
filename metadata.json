@@ -1,0 +1,6 @@
+{
+  "name": "PW SARA",
+  "description": "Secure access-control portal with admin approvals, multi-device verification, and protected destination redirection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
