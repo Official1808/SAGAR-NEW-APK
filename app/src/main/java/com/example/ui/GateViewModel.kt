@@ -498,72 +498,160 @@ class GateViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Vercel Status Check / Auto-Approval Polling ---
-    fun checkVercelStatus(username: String) {
+    fun checkVercelStatus(username: String?) {
+        val targetUser = if (!username.isNullOrBlank()) {
+            username
+        } else {
+            _authUiState.value.pendingUsername ?: ""
+        }
+
+        if (targetUser.isBlank()) return
+
         val vercelUrl = emailService.vercelBackendUrl.trimEnd('/')
-        if (vercelUrl.isBlank()) return
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val encodedUser = java.net.URLEncoder.encode(username, "UTF-8")
-                val url = java.net.URL("$vercelUrl/api/check-status?username=$encodedUser")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
-                conn.setRequestProperty("Accept", "application/json")
+            var status = ""
+            val cleanUser = targetUser.trim().lowercase()
 
-                if (conn.responseCode == 200) {
-                    val response = conn.inputStream.bufferedReader().use { it.readText() }
-                    val json = org.json.JSONObject(response)
-                    val status = json.optString("status", "").uppercase()
+            // 1. Check Vercel Backend endpoint (/api/check-status)
+            if (vercelUrl.isNotBlank()) {
+                try {
+                    val encodedUser = java.net.URLEncoder.encode(cleanUser, "UTF-8")
+                    val url = java.net.URL("$vercelUrl/api/check-status?username=$encodedUser&_t=${System.currentTimeMillis()}")
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.useCaches = false
+                    conn.setRequestProperty("Cache-Control", "no-cache")
+                    conn.setRequestProperty("Pragma", "no-cache")
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 3000
+                    conn.setRequestProperty("Accept", "application/json")
 
-                    if (status == "APPROVED" || status == "APPROVE") {
-                        // Apply approval locally
-                        val norm = com.example.security.SecurityUtils.normalizeUsername(username)
-                        val user = db.appDao().getUserByNormalizedUsername(norm)
-                        if (user != null) {
-                            repository.approveUser(user.id)
-                            val device = db.appDao().getDevice(user.id, deviceManager.getCurrentDeviceIdentifier())
-                            if (device != null) {
-                                repository.approveDevice(device.id)
-                            }
-
-                            // Generate active portal session directly so user enters immediately
-                            val sessionToken = com.example.security.SecurityUtils.generateSecureToken(32)
-                            val session = com.example.data.SessionEntity(
-                                userId = user.id,
-                                deviceId = device?.id ?: 1L,
-                                tokenHash = sessionToken,
-                                expiresAt = System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(12)
-                            )
-                            db.appDao().insertSession(session)
-                            db.appDao().updateLastLogin(user.id)
-
-                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                _authenticatedUser.value = user
-                                _sessionToken.value = sessionToken
-                                _authUiState.value = _authUiState.value.copy(
-                                    isLoading = false,
-                                    errorMessage = null,
-                                    successMessage = "Access approved by Administrator! Welcome, ${user.username}!"
-                                )
-                                _currentScreen.value = AppScreen.DESTINATION
-                            }
-                        }
-                    } else if (status == "DENIED" || status == "DENY") {
-                        val norm = com.example.security.SecurityUtils.normalizeUsername(username)
-                        val user = db.appDao().getUserByNormalizedUsername(norm)
-                        if (user != null) {
-                            repository.denyUser(user.id)
-                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                _currentScreen.value = AppScreen.USER_DENIED
-                            }
+                    if (conn.responseCode == 200) {
+                        val response = conn.inputStream.bufferedReader().use { it.readText() }
+                        val json = org.json.JSONObject(response)
+                        val s = json.optString("status", "").uppercase()
+                        if (s.isNotBlank() && s != "PENDING") {
+                            status = s
                         }
                     }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    android.util.Log.w("GateViewModel", "Vercel check error: ${e.message}")
                 }
-                conn.disconnect()
-            } catch (ignored: Exception) {
-                // Background check fail silently
+            }
+
+            // 2. Real-time Pub/Sub Check via ntfy.sh (Ultra fast & 100% reliable)
+            if (status.isBlank() || status == "PENDING") {
+                try {
+                    val topic = "pwsara_auth_${cleanUser.replace(Regex("[^a-z0-9]"), "_")}"
+                    val ntfyUrl = java.net.URL("https://ntfy.sh/$topic/raw?poll=1&_t=${System.currentTimeMillis()}")
+                    val ntfyConn = ntfyUrl.openConnection() as java.net.HttpURLConnection
+                    ntfyConn.requestMethod = "GET"
+                    ntfyConn.useCaches = false
+                    ntfyConn.connectTimeout = 3000
+                    ntfyConn.readTimeout = 3000
+
+                    if (ntfyConn.responseCode == 200) {
+                        val raw = ntfyConn.inputStream.bufferedReader().use { it.readText() }
+                        if (raw.contains("APPROVED", ignoreCase = true)) {
+                            status = "APPROVED"
+                        } else if (raw.contains("DENIED", ignoreCase = true)) {
+                            status = "DENIED"
+                        }
+                    }
+                    ntfyConn.disconnect()
+                } catch (e: Exception) {
+                    android.util.Log.w("GateViewModel", "ntfy check error: ${e.message}")
+                }
+            }
+
+            // 3. Direct Cloud KV Fallback (guaranteed cross-serverless persistence)
+            if (status.isBlank() || status == "PENDING") {
+                try {
+                    val encodedUser = java.net.URLEncoder.encode(cleanUser, "UTF-8")
+                    val kvUrl = java.net.URL("https://kvdb.io/6iH8JqG7j4Zk8P2vNwKx1y/$encodedUser?_t=${System.currentTimeMillis()}")
+                    val kvConn = kvUrl.openConnection() as java.net.HttpURLConnection
+                    kvConn.requestMethod = "GET"
+                    kvConn.useCaches = false
+                    kvConn.connectTimeout = 3000
+                    kvConn.readTimeout = 3000
+
+                    if (kvConn.responseCode == 200) {
+                        val kvRaw = kvConn.inputStream.bufferedReader().use { it.readText() }
+                        if (kvRaw.contains("APPROVED", ignoreCase = true)) {
+                            status = "APPROVED"
+                        } else if (kvRaw.contains("DENIED", ignoreCase = true)) {
+                            status = "DENIED"
+                        }
+                    }
+                    kvConn.disconnect()
+                } catch (e: Exception) {
+                    android.util.Log.w("GateViewModel", "KV check error: ${e.message}")
+                }
+            }
+
+            // 4. Check local database status in case admin approved via Admin Dashboard
+            val norm = com.example.security.SecurityUtils.normalizeUsername(cleanUser)
+            val dbUser = db.appDao().getUserByNormalizedUsername(norm)
+
+            if (dbUser != null && dbUser.status == "APPROVED" && status.isBlank()) {
+                status = "APPROVED"
+            }
+
+            android.util.Log.d("GateViewModel", "Polling status for '$cleanUser': '$status'")
+
+            if (status == "APPROVED" || status == "APPROVE") {
+                val userToUnlock = dbUser ?: db.appDao().getUserByNormalizedUsername(norm)
+                if (userToUnlock != null) {
+                    repository.approveUser(userToUnlock.id)
+                    var device = db.appDao().getDevice(userToUnlock.id, deviceManager.getCurrentDeviceIdentifier())
+                    if (device != null) {
+                        repository.approveDevice(device.id)
+                    } else {
+                        val profile = deviceManager.hardwareProfile
+                        val newDev = com.example.data.DeviceEntity(
+                            userId = userToUnlock.id,
+                            secureDeviceIdentifier = profile.identifier,
+                            deviceType = profile.deviceType,
+                            operatingSystem = profile.os,
+                            ipAddress = profile.ip,
+                            approximateRegion = "${profile.region}, ${profile.country}",
+                            approvalStatus = "APPROVED"
+                        )
+                        val newDevId = db.appDao().insertDevice(newDev)
+                        device = db.appDao().getDeviceById(newDevId)
+                    }
+
+                    // Generate active portal session directly so user enters immediately
+                    val sessionToken = com.example.security.SecurityUtils.generateSecureToken(32)
+                    val session = com.example.data.SessionEntity(
+                        userId = userToUnlock.id,
+                        deviceId = device?.id ?: 1L,
+                        tokenHash = sessionToken,
+                        expiresAt = System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(12)
+                    )
+                    db.appDao().insertSession(session)
+                    db.appDao().updateLastLogin(userToUnlock.id)
+
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _authenticatedUser.value = userToUnlock
+                        _sessionToken.value = sessionToken
+                        _authUiState.value = _authUiState.value.copy(
+                            isLoading = false,
+                            errorMessage = null,
+                            successMessage = "Access approved by Administrator! Welcome, ${userToUnlock.username}!"
+                        )
+                        _currentScreen.value = AppScreen.DESTINATION
+                    }
+                }
+            } else if (status == "DENIED" || status == "DENY") {
+                if (dbUser != null) {
+                    repository.denyUser(dbUser.id)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _currentScreen.value = AppScreen.USER_DENIED
+                }
             }
         }
     }

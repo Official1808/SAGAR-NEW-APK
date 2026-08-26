@@ -1,28 +1,99 @@
-// In-memory store for serverless execution
+// Serverless Handler with Persistent Cloud Multi-Channel Sync
+import https from 'https';
+
+const KV_BUCKET = '6iH8JqG7j4Zk8P2vNwKx1y';
+
+function notifyNtfy(key, value) {
+  return new Promise((resolve) => {
+    try {
+      const topic = `pwsara_auth_${key.replace(/[^a-z0-9]/gi, '_')}`;
+      const postData = value;
+      const req = https.request({
+        hostname: 'ntfy.sh',
+        port: 443,
+        path: `/${topic}`,
+        method: 'POST',
+        headers: {
+          'Title': `PW SARA Authorization - ${key}`,
+          'Content-Type': 'text/plain',
+          'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: 3000
+      }, (res) => {
+        resolve(res.statusCode >= 200 && res.statusCode < 300);
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.write(postData);
+      req.end();
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+function saveToCloudKV(key, value) {
+  return new Promise((resolve) => {
+    try {
+      const data = JSON.stringify({ status: value, timestamp: Date.now() });
+      const req = https.request({
+        hostname: 'kvdb.io',
+        port: 443,
+        path: `/${KV_BUCKET}/${encodeURIComponent(key)}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data)
+        },
+        timeout: 3000
+      }, (res) => {
+        resolve(res.statusCode >= 200 && res.statusCode < 300);
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.write(data);
+      req.end();
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
 global.approvalStore = global.approvalStore || {};
 
-export default function handler(req, res) {
-  // Support CORS preflight
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const { action, username, token, type } = req.query;
+  const { action, username } = req.query;
 
   if (!username || !action) {
     return res.status(400).send("Missing username or action parameter.");
   }
 
   const cleanUser = username.trim().toLowerCase();
-  const cleanAction = action.trim().toUpperCase(); // "APPROVE" or "DENY"
+  const cleanAction = action.trim().toUpperCase();
+  const targetStatus = cleanAction === 'APPROVE' ? 'APPROVED' : 'DENIED';
 
-  // Save status in global store
-  global.approvalStore[cleanUser] = cleanAction === 'APPROVE' ? 'APPROVED' : 'DENIED';
+  // 1. Save to in-memory store
+  global.approvalStore[cleanUser] = targetStatus;
 
-  const isApproved = cleanAction === 'APPROVE';
+  // 2. Broadcast to ntfy real-time topic & cloud KV
+  await Promise.all([
+    notifyNtfy(cleanUser, targetStatus),
+    saveToCloudKV(cleanUser, targetStatus)
+  ]);
+
+  const isApproved = targetStatus === 'APPROVED';
   const color = isApproved ? '#22c55e' : '#ef4444';
   const title = isApproved ? '✔ Request Approved' : '✖ Request Denied';
-  const actionText = isApproved ? 'authorized' : 'blocked/denied';
+  const actionText = isApproved ? 'authorized' : 'blocked / denied';
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   return res.status(200).send(`
@@ -90,7 +161,7 @@ export default function handler(req, res) {
         
         <div class="details">
           User: <strong>${username}</strong><br>
-          Status: <strong>${global.approvalStore[cleanUser]}</strong>
+          Status: <strong>${targetStatus}</strong>
         </div>
 
         <p class="sub">

@@ -230,14 +230,46 @@ fun PendingStatusScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Real-time sync indicator
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, GateBorder, RoundedCornerShape(12.dp)),
+            color = GateCardElevated,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    tint = GateAmber,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Live Sync Active: Polling for email click...",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = GateAmber
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // Action Buttons
         GatePrimaryButton(
-            text = "TRY LOGIN AGAIN",
+            text = "CHECK STATUS NOW",
             onClick = {
-                viewModel.navigateTo(AppScreen.USER_AUTH)
+                viewModel.checkVercelStatus(authUiState.pendingUsername)
             },
             icon = Icons.Default.Refresh,
-            testTag = "try_again_button"
+            testTag = "check_status_now_button"
         )
 
         Spacer(modifier = Modifier.height(12.dp))
